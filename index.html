@@ -53,6 +53,9 @@
       width: 600px;
       height: 600px;
       border: 1px solid #d0d0d0;
+      /* 防止 JS 未加载前内容溢出闪烁（FOUC） */
+      overflow: hidden;
+      display: block;
     }
 
     v-scroll.theme-default {
@@ -98,7 +101,7 @@
     }
   }
   </script>
-  <script type="module" crossorigin src="/xvc-interview-quiz/assets/index-DyOy0cAT.js"></script>
+  <script type="module" crossorigin src="/xvc-interview-quiz/assets/index-BdhtUaaw.js"></script>
 </head>
 <body>
   <div class="theme-bar">
