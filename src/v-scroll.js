@@ -10,16 +10,54 @@ const BAR_MIN_H = 128,
       SCROLL_HIDE_DELAY = 1500,
       COLLAPSE_DELAY = 400;
 
-// ---- 纯函数 ----
+// ---- Shadow DOM 内部样式（Constructable Stylesheet，独立于 JS 逻辑）----
+const SHADOW_SHEET = new CSSStyleSheet();
+SHADOW_SHEET.replaceSync(`
+  :host {
+    display: block;
+    position: relative;
+    overflow: hidden;
+    height: 100%;
+  }
+  .vp {
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    scrollbar-width: none;
+  }
+  .vp::-webkit-scrollbar { display: none; }
+  .ct { min-height: 100%; }
+  [part~=track] {
+    position: absolute;
+    top: 0; right: 0;
+    height: 100%;
+    pointer-events: auto;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    box-sizing: border-box;
+    transition: width 0.4s ease, opacity 0.6s ease,
+                background 0.4s ease, border-color 0.4s ease;
+  }
+  [part~=bar] {
+    flex-shrink: 0;
+    user-select: none;
+    touch-action: none;
+  }
+`);
+
+// ---- 纯函数：滑块高度 ----
 const calcBarH = (vh, ch) =>
   Math.max(BAR_MIN_H, (vh / ch) * (vh - BAR_PADDING * 2));
 
+// ---- 纯函数：滑块 translateY ----
 const calcBarY = (scroll_top, vh, ch, bar_h) => {
   const track_h = vh - BAR_PADDING * 2 - bar_h,
         max_scroll = ch - vh;
   return BAR_PADDING + (max_scroll > 0 ? (scroll_top / max_scroll) * track_h : 0);
 };
 
+// ---- 纯函数：拖拽 deltaY → scrollTop ----
 const calcScrollFromDrag = (start_scroll, delta_y, vh, ch, bar_h) => {
   const track_h = vh - BAR_PADDING * 2 - bar_h,
         max_scroll = ch - vh;
@@ -27,13 +65,24 @@ const calcScrollFromDrag = (start_scroll, delta_y, vh, ch, bar_h) => {
   return start_scroll + (delta_y / track_h) * max_scroll;
 };
 
+// ---- 纯函数：从速度链表采样松手瞬时速度 ----
+const sampleVelocity = (vel_head, release_t, release_y, vh, ch, bar_h) => {
+  if (!vel_head) return 0;
+  let s = vel_head;
+  while (s.prev && (release_t - s.prev.t) < SAMPLE_MS) s = s.prev;
+  const dt = release_t - s.t;
+  if (dt <= 0) return 0;
+  const bar_vel = (release_y - s.y) / dt * 16,
+        track_h = vh - BAR_PADDING * 2 - bar_h,
+        scale = track_h > 0 ? (ch - vh) / track_h : 0;
+  return bar_vel * scale;
+};
+
+// ---- 纯函数：同步滑块位置和尺寸 ----
 const updateBar = (bar, track, vp, ct) => {
   const vh = vp.clientHeight,
         ch = ct.scrollHeight;
-  if (ch <= vh) {
-    track.hidden = true;
-    return;
-  }
+  if (ch <= vh) { track.hidden = true; return; }
   track.hidden = false;
   const bar_h = calcBarH(vh, ch),
         bar_y = calcBarY(vp.scrollTop, vh, ch, bar_h);
@@ -41,26 +90,26 @@ const updateBar = (bar, track, vp, ct) => {
   bar.style.transform = `translateY(${bar_y}px)`;
 };
 
-// ---- 构建 Shadow DOM ----
+// ---- 构建 Shadow DOM（使用 createElement，结构清晰可维护）----
 const buildShadow = (host) => {
   const shadow = host.attachShadow({ mode: 'open' });
-  shadow.innerHTML = `
-    <style>
-      :host { display: block; position: relative; overflow: hidden; height: 100%; }
-      .vp { width: 100%; height: 100%; overflow: auto; scrollbar-width: none; }
-      .vp::-webkit-scrollbar { display: none; }
-      .ct { min-height: 100%; }
-      [part~=track] { position: absolute; top: 0; right: 0; height: 100%; pointer-events: auto;
-        display: flex; justify-content: center; align-items: flex-start;
-        transition: width 0.4s ease, opacity 0.6s ease, background 0.4s ease, border-color 0.4s ease;
-        box-sizing: border-box; }
-      [part~=bar] { flex-shrink: 0; user-select: none; touch-action: none; }
-    </style>
-    <div class="vp"><div class="ct"><slot></slot></div></div>
-    <div part="track"><b part="bar"></b></div>`;
+  shadow.adoptedStyleSheets = [SHADOW_SHEET];
+
+  const vp = Object.assign(document.createElement('div'), { className: 'vp' }),
+        ct = Object.assign(document.createElement('div'), { className: 'ct' }),
+        slot = document.createElement('slot'),
+        track = document.createElement('div'),
+        bar = document.createElement('b');
+
+  track.part.add('track');
+  bar.part.add('bar');
+  ct.appendChild(slot);
+  vp.appendChild(ct);
+  track.appendChild(bar);
+  shadow.append(vp, track);
 };
 
-// ---- 挂载事件与状态，返回 cleanup 函数 ----
+// ---- 挂载交互逻辑，返回 cleanup 函数 ----
 const mount = (host) => {
   const sr = host.shadowRoot,
         vp = sr.querySelector('.vp'),
@@ -79,43 +128,59 @@ const mount = (host) => {
 
   const sync = () => updateBar(bar, track, vp, ct);
 
-  // ---- track 宽度辅助 ----
-  const setTrackW = (w) => { track.style.width = w; };
-
-  // 进入 scrolling 状态：细条、透明背景、无边框
-  const showScrolling = () => {
-    clearTimeout(scroll_timer);
+  // ---- track 三态管理（单一入口，消除重复 style 赋值）----
+  // state: 'idle' | 'scrolling' | 'expanded'
+  const setTrackState = (state) => {
     clearTimeout(collapse_timer);
     track.part.remove('expanded');
+
+    if (state === 'expanded') {
+      const cs = getComputedStyle(host);
+      track.style.background = cs.getPropertyValue('--track-bg').trim() || '#e8e8e8';
+      track.style.borderLeft = `1px solid ${cs.getPropertyValue('--track-border').trim() || '#d0d0d0'}`;
+      track.style.opacity = '1';
+      track.style.width = '18px';
+      track.part.add('expanded');
+      return;
+    }
+
+    // scrolling：细条、无背景
     track.style.background = 'transparent';
     track.style.borderLeft = '1px solid transparent';
-    track.style.opacity = '1';
-    setTrackW('6px');
+    track.style.width = '6px';
+
+    if (state === 'scrolling') {
+      track.style.opacity = '1';
+    } else {
+      // idle：若从 expanded 退出则先等收缩动效完成再淡出
+      const was_expanded = track.style.width !== '6px' || track.style.opacity === '1';
+      if (was_expanded) {
+        collapse_timer = setTimeout(() => { track.style.opacity = '0'; }, COLLAPSE_DELAY);
+      } else {
+        track.style.opacity = '0';
+      }
+    }
   };
 
-  // 退出到 idle：若已展开则先收缩再淡出，否则直接淡出
+  // idle 时机判断：已展开则走收缩动效，否则直接淡出
   const hideTrack = () => {
     const was_expanded = track.part.contains('expanded');
     track.part.remove('expanded');
+    track.style.background = 'transparent';
+    track.style.borderLeft = '1px solid transparent';
+    track.style.width = '6px';
     if (was_expanded) {
-      track.style.background = 'transparent';
-      track.style.borderLeft = '1px solid transparent';
-      setTrackW('6px');
-      collapse_timer = setTimeout(() => {
-        track.style.opacity = '0';
-      }, COLLAPSE_DELAY);
+      clearTimeout(collapse_timer);
+      collapse_timer = setTimeout(() => { track.style.opacity = '0'; }, COLLAPSE_DELAY);
     } else {
       track.style.opacity = '0';
     }
   };
 
-  // 滚动停止后延迟隐藏（hover 期间不触发）
   const scheduleHide = () => {
     clearTimeout(scroll_timer);
     if (track.part.contains('expanded')) return;
-    scroll_timer = setTimeout(() => {
-      if (!is_drag) hideTrack();
-    }, SCROLL_HIDE_DELAY);
+    scroll_timer = setTimeout(() => { if (!is_drag) hideTrack(); }, SCROLL_HIDE_DELAY);
   };
 
   // ---- 惯性滚动 ----
@@ -130,7 +195,7 @@ const mount = (host) => {
     raf_id = requestAnimationFrame(tick);
   };
 
-  // ---- 拖拽弹簧跟随（每帧追赶 target_scroll）----
+  // ---- 拖拽弹簧跟随 ----
   const springTick = () => {
     const max_scroll = ct.scrollHeight - vp.clientHeight,
           cur = vp.scrollTop,
@@ -159,8 +224,7 @@ const mount = (host) => {
   const onMove = (e) => {
     if (!is_drag) return;
     const vh = vp.clientHeight, ch = ct.scrollHeight,
-          bar_h = calcBarH(vh, ch),
-          new_scroll = calcScrollFromDrag(drag_start_scroll, e.clientY - drag_start_y, vh, ch, bar_h);
+          new_scroll = calcScrollFromDrag(drag_start_scroll, e.clientY - drag_start_y, vh, ch, calcBarH(vh, ch));
     target_scroll = Math.max(0, Math.min(new_scroll, ch - vh));
     vel_head = { t: e.timeStamp, y: e.clientY, prev: vel_head };
   };
@@ -173,44 +237,22 @@ const mount = (host) => {
     bar.releasePointerCapture(e.pointerId);
     bar.part.remove('dragging');
 
-    const rect = track.getBoundingClientRect(),
-          in_track = e.clientX >= rect.left && e.clientX <= rect.right
-                  && e.clientY >= rect.top  && e.clientY <= rect.bottom;
-    if (!in_track) {
-      hideTrack();
-    } else {
-      scheduleHide();
-    }
+    const { left, right, top, bottom } = track.getBoundingClientRect(),
+          in_track = e.clientX >= left && e.clientX <= right
+                  && e.clientY >= top  && e.clientY <= bottom;
+    if (!in_track) hideTrack(); else scheduleHide();
 
-    if (vel_head) {
-      const now = e.timeStamp;
-      let s = vel_head;
-      while (s.prev && (now - s.prev.t) < SAMPLE_MS) s = s.prev;
-      const dt = now - s.t;
-      if (dt > 0) {
-        const bar_vel = (e.clientY - s.y) / dt * 16,
-              vh = vp.clientHeight, ch = ct.scrollHeight,
-              bar_h = calcBarH(vh, ch),
-              track_h = vh - BAR_PADDING * 2 - bar_h,
-              scale = track_h > 0 ? (ch - vh) / track_h : 0;
-        startMomentum(bar_vel * scale);
-        return;
-      }
-    }
+    const vh = vp.clientHeight, ch = ct.scrollHeight,
+          v = sampleVelocity(vel_head, e.timeStamp, e.clientY, vh, ch, calcBarH(vh, ch));
     vel_head = null;
+    if (v !== 0) { startMomentum(v); return; }
     scheduleHide();
   };
 
   // ---- track hover ----
   const onTrackEnter = () => {
     clearTimeout(scroll_timer);
-    clearTimeout(collapse_timer);
-    track.part.add('expanded');
-    const s = getComputedStyle(host);
-    track.style.background = s.getPropertyValue('--track-bg').trim() || '#e8e8e8';
-    track.style.borderLeft = `1px solid ${s.getPropertyValue('--track-border').trim() || '#d0d0d0'}`;
-    track.style.opacity = '1';
-    setTrackW('18px');
+    setTrackState('expanded');
   };
 
   const onTrackLeave = () => {
@@ -218,9 +260,14 @@ const mount = (host) => {
     hideTrack();
   };
 
-  // ---- wheel：显示滚动条并重置隐藏计时器 ----
   const onWheel = () => {
-    showScrolling();
+    clearTimeout(scroll_timer);
+    clearTimeout(collapse_timer);
+    track.part.remove('expanded');
+    track.style.background = 'transparent';
+    track.style.borderLeft = '1px solid transparent';
+    track.style.opacity = '1';
+    track.style.width = '6px';
     scheduleHide();
   };
 
@@ -239,14 +286,14 @@ const mount = (host) => {
   track.addEventListener('mouseenter', onTrackEnter);
   track.addEventListener('mouseleave', onTrackLeave);
 
-  // 初始态：隐藏 track
+  // 初始态
   track.style.background = 'transparent';
   track.style.borderLeft = '1px solid transparent';
   track.style.opacity = '0';
-  setTrackW('6px');
+  track.style.width = '6px';
   sync();
 
-  // ---- cleanup（disconnectedCallback 时调用）----
+  // ---- cleanup ----
   return () => {
     cancelAnimationFrame(raf_id);
     clearTimeout(scroll_timer);
@@ -263,7 +310,7 @@ const mount = (host) => {
   };
 };
 
-// ---- CSS 注入（document head，只注一次）----
+// ---- CSS 注入 document head（只注一次）----
 const injectCSS = () => {
   if (document.querySelector('style[data-v-scroll]')) return;
   const el = document.createElement('style');
