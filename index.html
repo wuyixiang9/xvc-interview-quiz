@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>v-scroll demo</title>
+
+  <!-- importmap 必须在所有 type="module" 之前 -->
+  <script type="importmap">
+  {
+    "imports": {
+      "$/": "/theme/"
+    }
+  }
+  </script>
+
+  <script type="module" src="/src/v-scroll.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #f5f5f5;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 20px;
+      gap: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    /* ---- 主题切换按钮 ---- */
+    .theme-bar {
+      display: flex;
+      gap: 12px;
+    }
+
+    .theme-btn {
+      padding: 8px 20px;
+      border-radius: 8px;
+      border: 2px solid transparent;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+
+      &.default { background: #fff; color: #444; border-color: #d0d0d0; }
+      &.default:hover { border-color: #999; }
+
+      &.red { background: #fff0ee; color: #c0392b; border-color: #e57373; }
+      &.red:hover { background: #ffe0db; border-color: #c0392b; }
+
+      &.blue { background: #eef4ff; color: #1a56db; border-color: #93c5fd; }
+      &.blue:hover { background: #dbeafe; border-color: #1a56db; }
+
+      &.active { box-shadow: 0 0 0 3px rgba(0,0,0,0.12); }
+    }
+
+    /* ---- 主题变量定义 ---- */
+    v-scroll {
+      width: 600px;
+      height: 600px;
+      border: 1px solid #d0d0d0;
+    }
+
+    v-scroll.theme-default {
+      --bar-color: #b0b0b0;
+      --bar-color-hover: #888888;
+      --bar-color-drag: #555555;
+      --bar-w: 6px;
+      --bar-radius: 3px;
+      --track-bg: #e8e8e8;
+      --track-border: #d0d0d0;
+    }
+
+    v-scroll.theme-red {
+      --bar-color: #ef9a9a;
+      --bar-color-hover: #e53935;
+      --bar-color-drag: #b71c1c;
+      --bar-w: 8px;
+      --bar-radius: 4px;
+      --track-bg: #ffebee;
+      --track-border: #ef9a9a;
+    }
+
+    v-scroll.theme-blue {
+      --bar-color: #90caf9;
+      --bar-color-hover: #1976d2;
+      --bar-color-drag: #0d47a1;
+      --bar-w: 10px;
+      --bar-radius: 5px;
+      --track-bg: #e3f2fd;
+      --track-border: #90caf9;
+    }
+
+    .item {
+      font-size: 28px;
+      font-weight: bold;
+      padding: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="theme-bar">
+    <button class="theme-btn default active" data-theme="theme-default">默认</button>
+    <button class="theme-btn red"            data-theme="theme-red">红色</button>
+    <button class="theme-btn blue"           data-theme="theme-blue">蓝色</button>
+  </div>
+
+  <v-scroll id="vs" class="theme-default"></v-scroll>
+
+  <script>
+    const vs = document.getElementById('vs');
+    for (let i = 0; i < 100; i++) {
+      const d = document.createElement('div');
+      d.className = 'item';
+      d.textContent = `Welcome to vibe ${i}`;
+      vs.appendChild(d);
+    }
+
+    // 主题切换
+    const btns = document.querySelectorAll('.theme-btn');
+    btns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        btns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        vs.className = btn.dataset.theme;
+      });
+    });
+  </script>
+</body>
+</html>
