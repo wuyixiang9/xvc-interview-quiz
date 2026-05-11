@@ -1,3 +1,9 @@
+/* ===== 防止 Web Component 升级前内容溢出（FOUC）===== */
+v-scroll:not(:defined) {
+  overflow: hidden;
+  display: block;
+}
+
 /* ===== 可定制 CSS 变量 ===== */
 v-scroll {
   --bar-color: #b0b0b0;
