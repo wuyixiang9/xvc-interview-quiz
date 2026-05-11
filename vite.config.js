@@ -1,7 +1,8 @@
 import { defineConfig } from 'vite';
 
 // 读取并压缩 CSS，返回 JS 模块字符串
-const buildCssModule = async (root) => {
+// base 用于将 CSS 中的绝对路径 SVG 替换为带前缀的路径
+const buildCssModule = async (root, base = '/') => {
   const { readFile, writeFile, mkdir } = await import('node:fs/promises');
   const { join } = await import('node:path');
   const { transform } = await import('lightningcss');
@@ -9,7 +10,10 @@ const buildCssModule = async (root) => {
   await mkdir(out_dir, { recursive: true });
   const css = await readFile(join(root, 'src/v-scroll.css'), 'utf-8');
   const { code } = transform({ filename: 'v-scroll.css', code: Buffer.from(css), minify: true });
-  const minified = code.toString();
+  // 将 /scroll.svg、/grab.svg 替换为实际部署路径
+  const minified = code.toString()
+    .replace(/url\(\/scroll\.svg\)/g, `url(${base}scroll.svg)`)
+    .replace(/url\(\/grab\.svg\)/g, `url(${base}grab.svg)`);
   const escaped = minified.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
   const js_content = `export default '${escaped}';`;
   await writeFile(join(out_dir, 'v-scroll.js'), js_content);
@@ -23,7 +27,7 @@ const cssToJsPlugin = () => {
     name: 'css-to-js-module',
     async configResolved(config) {
       base = config.base || '/';
-      css_module = await buildCssModule(config.root);
+      css_module = await buildCssModule(config.root, base);
     },
     // dev 模式：拦截 "$/" 前缀的 import，直接返回 CSS 模块内容
     resolveId(id) {
